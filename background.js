@@ -3,15 +3,35 @@ console.log('Terms Simplified Background Script Started');
 // Configuration
 const PERPLEXITY_API_URL = 'https://api.perplexity.ai/chat/completions';
 
-// Store API key (you'll need to set this)
+// Store API key (from environment or user settings)
 let apiKey = null;
 
-// Load API key from storage or set it
+// Initialize with environment configuration
+async function initializeApiKey() {
+    // First check for user-configured API key
+    try {
+        const result = await chrome.storage.sync.get(['perplexityApiKey']);
+        if (result.perplexityApiKey) {
+            apiKey = result.perplexityApiKey;
+            return;
+        }
+    } catch (error) {
+        console.log('Could not access chrome storage for API key');
+    }
+
+    // If no user key, check for environment default (developers can set this)
+    // You can uncomment and set your API key here for development:
+    // apiKey = 'pplx-your-api-key-here';
+}
+
+// Initialize on startup
+initializeApiKey();
+
+// Load API key from storage or environment
 chrome.storage.sync.get(['perplexityApiKey'], (result) => {
     if (result.perplexityApiKey) {
         apiKey = result.perplexityApiKey;
     } else {
-        // For now, we'll prompt user to set API key
         console.log('Please set your Perplexity API key in the extension options');
     }
 });
@@ -34,11 +54,8 @@ async function handleAnalyzeTC(domain, url) {
     try {
         // Check if API key is available
         if (!apiKey) {
-            // Try to get API key from storage again
-            const result = await chrome.storage.sync.get(['perplexityApiKey']);
-            if (result.perplexityApiKey) {
-                apiKey = result.perplexityApiKey;
-            } else {
+            await initializeApiKey();
+            if (!apiKey) {
                 throw new Error('Please set your Perplexity API key. Go to extension options and add your API key.');
             }
         }
@@ -51,15 +68,15 @@ async function handleAnalyzeTC(domain, url) {
         updateProgress('Analyzing with AI...');
         const analysis = await analyzeTermsAndConditions(domain, tcUrl);
 
-        // Step 3: Extract flaws from analysis
-        updateProgress('Identifying potential issues...');
-        const flaws = extractFlaws(analysis);
+        // Step 3: Parse structured analysis from response
+        updateProgress('Processing analysis results...');
+        const structuredAnalysis = parseStructuredAnalysis(analysis);
 
         return {
             domain: domain,
             tcUrl: tcUrl,
-            flaws: flaws,
-            fullAnalysis: analysis
+            analysis: structuredAnalysis,
+            rawAnalysis: analysis
         };
 
     } catch (error) {
@@ -90,26 +107,74 @@ async function findTermsAndConditions(domain) {
     }
 }
 
-// Function to analyze Terms and Conditions
+// Function to analyze Terms and Conditions with improved prompt
 async function analyzeTermsAndConditions(domain, tcUrl) {
-    const query = `Please analyze the terms and conditions for ${domain} found at ${tcUrl}. 
+    const enhancedPrompt = `Act as an expert legal analyst specializing in consumer protection and digital rights. Your task is to perform a comprehensive analysis of the Terms and Conditions for ${domain} found at ${tcUrl} to identify potentially problematic, unfair, or legally concerning clauses that may disadvantage users.
 
-Focus on identifying potential issues that could be harmful to users such as:
-- Excessive data collection or sharing
-- Unfair termination clauses
-- Liability limitations that seem unreasonable
-- Automatic renewals or billing issues
-- Intellectual property overreach
-- Dispute resolution limitations
-- Privacy concerns
-- Unclear refund policies
+Analyze the T&C document systematically and present your findings in the following structured format:
 
-Provide a concise analysis highlighting the main concerns. Keep the response under 500 words and focus on actionable insights for users.`;
+**ANALYSIS STRUCTURE:**
+
+For each identified issue, provide:
+1. **Issue Category** (as the heading)
+2. **Risk Level** (High/Medium/Low)
+3. **Exact Phrase(s)** (direct quotes from the document)
+4. **Issue Explanation** (why this is problematic)
+5. **Potential Impact** (consequences for users)
+
+**FOCUS AREAS FOR ANALYSIS:**
+
+1. Data Rights and Privacy Violations
+   - Excessive data collection permissions
+   - Unclear data sharing practices
+   - Inadequate user control over personal information
+
+2. Unfair Liability and Indemnification
+   - One-sided liability limitations
+   - Excessive user indemnification requirements
+   - Unreasonable damage exclusions
+
+3. Termination and Account Control
+   - Arbitrary termination rights
+   - Lack of appeal processes
+   - Unclear account suspension criteria
+
+4. Intellectual Property Overreach
+   - Excessive content licensing
+   - Unclear ownership of user-generated content
+   - Broad usage rights claims
+
+5. Dispute Resolution Restrictions
+   - Mandatory arbitration clauses
+   - Class action waivers
+   - Jurisdiction limitations
+
+6. Automatic Renewals and Billing
+   - Hidden auto-renewal terms
+   - Unclear cancellation processes
+   - Unfair refund policies
+
+7. Service Modification Rights
+   - Unilateral service change rights
+   - Inadequate notice requirements
+   - Price change provisions
+
+**OUTPUT FORMAT:**
+
+## 1. [ISSUE CATEGORY NAME]
+**Risk Level:** [High/Medium/Low]
+**Exact Phrase:** "[Insert exact quote from T&C]"
+**Issue Explanation:** [Explain why this clause is problematic]
+**Potential Impact:** [Describe consequences for users]
+
+Continue this format for all identified issues. If no significant issues are found, provide a brief summary of what was reviewed.
+
+Please analyze the Terms and Conditions for ${domain} and provide your findings in the specified format.`;
 
     try {
         const response = await callPerplexityAPI([{
             role: 'user',
-            content: query
+            content: enhancedPrompt
         }], 'llama-3.1-sonar-large-128k-online');
 
         return response.choices[0].message.content;
@@ -118,63 +183,79 @@ Provide a concise analysis highlighting the main concerns. Keep the response und
     }
 }
 
-// Function to extract specific flaws from analysis
-function extractFlaws(analysis) {
-    // Use simple text processing to extract bullet points or key issues
-    const flaws = [];
-    
-    // Look for common patterns that indicate issues
-    const lines = analysis.split('\n');
-    
+// Function to parse structured analysis into organized data
+function parseStructuredAnalysis(analysisText) {
+    const issues = [];
+    const lines = analysisText.split('\n');
+    let currentIssue = null;
+    let currentField = null;
+
     for (const line of lines) {
         const trimmed = line.trim();
         
-        // Skip empty lines
         if (!trimmed) continue;
-        
-        // Look for bullet points, numbered lists, or sentences with concern keywords
-        if (trimmed.match(/^[-•*]\s/) || 
-            trimmed.match(/^\d+\.\s/) ||
-            trimmed.toLowerCase().includes('concern') ||
-            trimmed.toLowerCase().includes('issue') ||
-            trimmed.toLowerCase().includes('problematic') ||
-            trimmed.toLowerCase().includes('unfair') ||
-            trimmed.toLowerCase().includes('excessive') ||
-            trimmed.toLowerCase().includes('limitation') ||
-            trimmed.toLowerCase().includes('unclear')) {
+
+        // Check for issue headers (## 1. ISSUE NAME)
+        const issueMatch = trimmed.match(/^##\s*\d+\.\s*(.+)$/);
+        if (issueMatch) {
+            // Save previous issue if exists
+            if (currentIssue && currentIssue.title) {
+                issues.push(currentIssue);
+            }
             
-            // Clean up the text
-            let flaw = trimmed.replace(/^[-•*]\s/, '').replace(/^\d+\.\s/, '');
-            
-            // Only add if it's substantial (more than 10 characters)
-            if (flaw.length > 10 && flaw.length < 200) {
-                flaws.push(flaw);
+            // Start new issue
+            currentIssue = {
+                title: issueMatch[1].trim(),
+                riskLevel: '',
+                exactPhrase: '',
+                explanation: '',
+                impact: ''
+            };
+            continue;
+        }
+
+        if (!currentIssue) continue;
+
+        // Check for field headers
+        if (trimmed.startsWith('**Risk Level:**')) {
+            currentField = 'riskLevel';
+            currentIssue.riskLevel = trimmed.replace('**Risk Level:**', '').trim();
+        } else if (trimmed.startsWith('**Exact Phrase:**')) {
+            currentField = 'exactPhrase';
+            currentIssue.exactPhrase = trimmed.replace('**Exact Phrase:**', '').trim().replace(/^"|"$/g, '');
+        } else if (trimmed.startsWith('**Issue Explanation:**')) {
+            currentField = 'explanation';
+            currentIssue.explanation = trimmed.replace('**Issue Explanation:**', '').trim();
+        } else if (trimmed.startsWith('**Potential Impact:**')) {
+            currentField = 'impact';
+            currentIssue.impact = trimmed.replace('**Potential Impact:**', '').trim();
+        } else if (currentField && trimmed && !trimmed.startsWith('**')) {
+            // Continue previous field
+            if (currentIssue[currentField]) {
+                currentIssue[currentField] += ' ' + trimmed;
+            } else {
+                currentIssue[currentField] = trimmed;
             }
         }
     }
-    
-    // If no structured flaws found, try to extract sentences with warning keywords
-    if (flaws.length === 0) {
-        const sentences = analysis.split(/[.!?]+/);
-        for (const sentence of sentences) {
-            const trimmed = sentence.trim();
-            if (trimmed.length > 20 && trimmed.length < 150 && 
-                (trimmed.toLowerCase().includes('may') || 
-                 trimmed.toLowerCase().includes('could') ||
-                 trimmed.toLowerCase().includes('allows') ||
-                 trimmed.toLowerCase().includes('requires'))) {
-                flaws.push(trimmed);
-                if (flaws.length >= 3) break; // Limit to 3 flaws
-            }
-        }
+
+    // Add the last issue
+    if (currentIssue && currentIssue.title) {
+        issues.push(currentIssue);
     }
-    
-    // Fallback: if still no flaws, provide a general summary
-    if (flaws.length === 0) {
-        flaws.push('Review the terms carefully for data usage, cancellation policies, and liability limitations.');
+
+    // If no structured issues found, create a general summary
+    if (issues.length === 0) {
+        issues.push({
+            title: 'General Analysis',
+            riskLevel: 'Medium',
+            exactPhrase: 'Full document reviewed',
+            explanation: 'The terms and conditions were analyzed for potential issues.',
+            impact: 'Review the terms carefully for data usage, cancellation policies, and liability limitations.'
+        });
     }
-    
-    return flaws.slice(0, 5); // Limit to 5 flaws maximum
+
+    return issues;
 }
 
 // Function to call Perplexity API
@@ -192,7 +273,7 @@ async function callPerplexityAPI(messages, model = 'llama-3.1-sonar-small-128k-o
         body: JSON.stringify({
             model: model,
             messages: messages,
-            max_tokens: 1000,
+            max_tokens: 2000,
             temperature: 0.2,
             stream: false
         })
