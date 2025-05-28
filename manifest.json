@@ -2,14 +2,26 @@
   "$schema": "https://json.schemastore.org/chrome-manifest.json",
   "manifest_version": 3,
   "version": "0.0.1",
-  "name": "terms-simplified",
-  "description": "An Extension.js example.",
+  "name": "Terms Simplified",
+  "description": "AI-powered Terms and Conditions analyzer to help you understand the fine print.",
   "icons": {
     "48": "images/extension_48.png"
   },
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "Terms Simplified",
+    "default_icon": {
+      "48": "images/extension_48.png"
+    }
+  },
+  "options_ui": {
+    "page": "options/options.html",
+    "open_in_tab": true
+  },
   "permissions": [
     "activeTab",
-    "scripting"
+    "scripting",
+    "storage"
   ],
   "host_permissions": [
     "<all_urls>"
